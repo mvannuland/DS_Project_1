@@ -1,0 +1,574 @@
+---
+title: "Geographic changes in tree-fungal partnerships"
+output:
+  html_document: default
+---
+### Project 1 --- Michael Van Nuland
+
+**Description:** This code comes from an ongoing project where I am testing how climate change may cause geographic shifts in North American ectomycorrhizal symbioses. Because this work is unpublished and in collaboration with researchers at Stanford University and UC Santa Cruz, I am unable to share the full datasets and methods right now. However, I can describe the general approach and provide a few data objects to recreate some recent analyses and figures below.
+
+Climate disruptions may result in spatial mismatches between plant and microbial distributions, and the loss of historical interactions or gain of novel associations can have important consequences for biodiversity and ecosystem functioning. Biogeographic mismatches caused by climate change might arise if plants and microbes respond to different climate variables or if they differ in their sensitivity to the same variable. Previous work has shown how climate warming is predicted to reduce ectomycorrhizal fungal diversity in pine-dominated forest systems <a href="https://doi.org/10.1111/jbi.13802">(Steidinger et al. 2020)</a>, but this assumes that tree and fungal species ranges are static. Realistically, both plant and fungal distributions are likely to be reshuffled (to various extents) as their environments change. Forecasting where species interactions may be gained/lost on the landscape is an important step towards linking changes in plant-mycorrhizal symbioses to ecosystem processes and forest resiliency.
+
+The general approach is to build <a href="https://en.wikipedia.org/wiki/Species_distribution_modelling">species distribution models (SDMs)</a> for trees and their mycorrhizal fungi partners, calculate the extent of overlapping habitat suitability under current climate conditions, and compare this to projected overlap levels under future climates. To do this, I am using tree species occurrence records gathered from the <a href="https://doi.org/10.1111/2041-210X.12861">‘bien’ R package</a> (which uses databases such as <a href="https://www.fia.fs.fed.us/tools-data/">FIA</a> and <a href="https://www.gbif.org/">GBIF</a>, among others), and ectomycorrhizal occurrence records using fungal sequence data from samples across North America that capture the majority of ecoregions and climate space. Additionally, each fungal sample included details on aboveground woody vegetation, which I use to cross-reference and filter tree species IDs with ectomycorrhizal occurrences to create host-specific models of fungal species and community distributions. While I cannot share all the data-wrangling and SDM steps just yet, the data and code below shows some of my thoughts on how to combine plant and fungal observations in unique ways to model their potential climate change responses.
+
+Data for this example project can be found here: https://github.com/mvannuland/DataSciPorfolio_datasets
+
+### Contents:
+**1   -** Setup
+<br>
+**2   -** Estimating overlap between tree species and fungal species ranges
+<br>
+**3   -** Mapping fungal diversity "left behind"
+<br>
+**4   -** Summarizing fungal species range shift extent and direction
+<br>
+
+
+### 1. Setup
+Load R libraries and data objects. 
+```{r message=FALSE}
+###   R libraries   ###
+
+# Data wrangling
+library(tidyverse)
+
+# Parallel processing
+library(foreach)
+library(doParallel)
+
+# Spatial tools
+library(rnaturalearth)
+library(raster)
+library(rgeos)
+library(rgdal)
+library(sf)
+library(sp)
+
+# Visualization
+library(ggplot2)
+library(ggdist)
+library(ggpubr)
+library(RColorBrewer)
+library(viridis)
+library(tmap)
+
+###   Data   ###
+
+# Available here: https://github.com/mvannuland/DataSciPorfolio_datasets
+
+# Tree SDM models (comprising 17 widespread tree species that form ectomycorrhizal ("EM") symbioses)
+Tree_spp_Current_thresholdMap.ls <- readRDS(file="Tree_spp_Current_thresholdMap.ls.rds")
+Tree_spp_Future_thresholdMap.ls <- readRDS(file="Tree_spp_Future_thresholdMap.ls.rds")
+
+# Fungal SDM models (comprising >300 EM species)
+EM.sp_Current_thresholdMap.ls <- readRDS(file="EM.sp_Current_thresholdMap.ls.rds")
+EM.sp_Future_thresholdMap.ls <- readRDS(file="EM.sp_Future_thresholdMap.ls.rds") 
+
+# Co-occurrence data to filter spatial comparisons (list of fungi that co-occur at sites with tree species)
+CoOccur_filter.ls <- readRDS(file="CoOccur_filter.ls.rds")
+```
+<br>
+
+
+### 2.1 Estimating overlap between tree species and fungal species ranges
+The SDM output includes spatial projections of habitat suitability: areas where the plant and fungal species in this study are likely to be found based on relationships between their occurrence records and a number of environmental variables. As part of the modeling approach (that, unfortunately, I can't quite share yet), I used k-fold cross validation to evaluate the accuracy and sensitivity of each species model in order to set a binary presence/absence threshold. Masking  habitat suitability to only include areas above the defined thresholds creates maps that can be considered an approximation or <em>idealized version</em> of a given species' geographic range.
+ 
+For example, here's what SDM projections look like after setting threshold cutoffs to create presence/absence maps for Douglas fir trees and a specific Russula fungal species.
+```{r}
+par(mfrow = c(1, 2))
+plot(Tree_spp_Current_thresholdMap.ls$`Pseudotsuga menziesii`, main="Pseudotsuga menziesii", legend=FALSE)
+plot(EM.sp_Current_thresholdMap.ls$Russula_heterophylla, main="Russula heterophylla", legend=FALSE)
+```
+<br>
+
+### 2.2 
+I then use these presence/absence maps to calculate the amount of range overlap between tree and fungal species pairs under current and future climates. The code below shows an example for this approach with one tree species (<em>Pseudotsuga menziesii</em>), and later a summary figure showing all tree-fungal comparisons.
+```{r}
+# Pseudotsuga menziesii example
+PMEZ <- "Pseudotsuga menziesii"
+PMEZ.EM.filts <- CoOccur_filter.ls[[PMEZ]]$EMfungi # Subset fungi that co-occur at sites with PMEZ trees
+
+# Create empty lists and vectors to store for loop data
+PMEZ.EM_Current_joined.Map.ls <- list()
+PMEZ.EM_Current_overlap.Map.ls <- list()
+PMEZ.EM_Current_Raw.overlap <- NA
+
+PMEZ.EM_Future_joined.Map.ls <- list()
+PMEZ.EM_Future_overlap.Map.ls <- list()
+PMEZ.EM_Future_Raw.overlap <- NA
+
+# Use for loop to make all PMEZ - fungal species range calculations
+for (i in PMEZ.EM.filts){
+  PMEZ.EM_Current_joined.Map.ls[[i]] <- Tree_spp_Current_thresholdMap.ls[[PMEZ]] + EM.sp_Current_thresholdMap.ls[[i]]
+  PMEZ.EM_Current_overlap.Map.ls[[i]] <- PMEZ.EM_Current_joined.Map.ls[[i]] >= 2
+  PMEZ.EM_Current_Raw.overlap[i] <- sum(values(
+    area(PMEZ.EM_Current_overlap.Map.ls[[i]]))[which(values(PMEZ.EM_Current_overlap.Map.ls[[i]]))]
+    )
+  
+  PMEZ.EM_Future_joined.Map.ls[[i]] <- Tree_spp_Future_thresholdMap.ls[[PMEZ]] + EM.sp_Future_thresholdMap.ls[[i]]
+  PMEZ.EM_Future_overlap.Map.ls[[i]] <- PMEZ.EM_Future_joined.Map.ls[[i]] >= 2
+  PMEZ.EM_Future_Raw.overlap[i] <- sum(values(
+    area(PMEZ.EM_Future_overlap.Map.ls[[i]]))[which(values(PMEZ.EM_Future_overlap.Map.ls[[i]]))]
+    )
+}
+
+# From here, you can visualize where PMEZ and Russula heterophylla ranges should overlap
+
+# Remove blank space from plot
+PMEZ.EM_Current_joined.Map.ls$Russula_heterophylla[PMEZ.EM_Current_joined.Map.ls$Russula_heterophylla==0] <- NA
+# Convert raster to spatial dataframe (for ggplot visualization)
+PMEZ.RHET_pts <- rasterToPoints(PMEZ.EM_Current_joined.Map.ls$Russula_heterophylla, spatial = TRUE)
+PMEZ.RHET_df  <- data.frame(PMEZ.RHET_pts)
+
+# Create North America map layer
+worldmap <- ne_countries(scale = 'medium', type = 'map_units', returnclass = 'sf')
+North.America <- worldmap[worldmap$continent == 'North America',]
+
+# Mapping PMEZ and Russula heterophylla overlap
+PMEZ.RHET.plot <-
+  ggplot() +
+  geom_sf(data = North.America, fill="grey95", lwd=0.1) +
+  geom_tile(data = PMEZ.RHET_df, aes(x = x, y = y, fill = as.factor(layer)), show.legend = F) +
+  scale_fill_manual(values=c("dodgerblue", "orange")) +
+  ggtitle("orange = overlap") +
+  xlim(-168.6004, -55.64961) +
+  ylim(20.34902, 70.47395) +
+  labs(x="longitude", y="latitude") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+# And also summarize the total EM fungal diversity that overlaps with the Pseudotsuga menziesii range
+PMEZ_Current.EM.diversity <- Reduce(`+`, PMEZ.EM_Current_overlap.Map.ls) # sum all EM raster layers
+PMEZ_Current.EM.diversity[PMEZ_Current.EM.diversity==0] <- NA # remove NA black space on rasterlayer
+PMEZ.EMdiv_pts <- rasterToPoints(PMEZ_Current.EM.diversity, spatial = TRUE) # Convert raster to spatial df
+PMEZ.EMdiv_df  <- data.frame(PMEZ.EMdiv_pts)
+
+# Mapping total EM diversity across PMEZ tree range
+PMEZ.EMdiv.plot <-
+  ggplot() +
+  geom_sf(data = North.America, fill="grey95", lwd=0.1) +
+  geom_tile(data = PMEZ.EMdiv_df, aes(x = x, y = y, fill = layer), show.legend = F) +
+  scale_fill_distiller(palette = "YlOrBr", direction=1) +
+  ggtitle("darker orange = more EM overlap") +
+  xlim(-168.6004, -55.64961) +
+  ylim(20.34902, 70.47395) +
+  labs(x="longitude", y="latitude") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+ggarrange(PMEZ.RHET.plot, PMEZ.EMdiv.plot, ncol=2)
+```
+<br>
+
+
+### 2.3
+As mentioned in the project description above, I have also been predicting how the extent of tree-fungal range overlap could change between current and future climate conditions. Some examples of this follow below:
+```{r warning=FALSE}
+# Create dataframe of tree-fungal range overlaps for Pseudotsuga Menziesii (raw values are in m2)
+PMEZ.Raw.Overlap.dat <- cbind.data.frame(EM_fungi = PMEZ.EM.filts,
+                                         CurrentOverlap.raw = na.exclude(PMEZ.EM_Current_Raw.overlap),
+                                         FutureOverlap.raw = na.exclude(PMEZ.EM_Future_Raw.overlap),
+                                         DiffOverlap.raw = (na.exclude(PMEZ.EM_Future_Raw.overlap) -
+                                                              na.exclude(PMEZ.EM_Current_Raw.overlap)))
+
+# Create a line graph showing EM overlap between current and future conditions
+PMEZ.linegraph.dat <- gather(PMEZ.Raw.Overlap.dat[1:3], variable, value, -EM_fungi) # A little data-wrangling 
+names(PMEZ.linegraph.dat) <- c("EM_fungi", "Timepoint", "Overlap_m2")
+
+PMEZ.linegraph.plot <-
+  ggplot() +
+  geom_line(data=PMEZ.linegraph.dat, aes(x=Timepoint, y=Overlap_m2, group=EM_fungi), alpha=0.5) +
+  labs(x="Timepoint", y="Tree-EM range overlap (m2)") +
+  scale_x_discrete(expand = c(0,0.1)) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+# Use raincloud plots to show EM species variation in range overlap changes between current and future climates
+PMEZ.Raw.Overlap.dat.no0 <- subset(PMEZ.Raw.Overlap.dat, 
+                                 PMEZ.Raw.Overlap.dat$CurrentOverlap.raw > 0) # remove EM species with 0 km2 overlap
+
+PMEZ.overlap.plot <-
+  ggplot(PMEZ.Raw.Overlap.dat.no0, aes(x=as.factor(2), y = DiffOverlap.raw)) +
+  geom_hline(yintercept = 0, color="black") +
+  ggdist::stat_halfeye(
+    adjust = .75,
+    width = .75, 
+    ## set slab interval to show IQR and 95% data range
+    .width = c(.5, .95)) + 
+  ggdist::stat_dots(
+    side = "left", 
+    justification = 1.2,
+    dotsize = .1,
+    binwidth = .01) +
+  coord_cartesian(xlim = c(1.2, NA)) +
+  labs(x = "Pseudotsuga menziesii", y = "Tree-EM overlap difference\n(future - current, m2)") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        axis.text.x = element_blank())
+
+# And here is what that looks like for the rest of the tree species (species names are coded with four-letter identifiers)
+TreeFungal_overlap_dat <- read.csv(file="TreeFungal_overlap_dat.csv") # Combined data for all tree species EM overlap estimates
+TreeFungal_overlap_dat.no0 <- subset(TreeFungal_overlap_dat, 
+                                 TreeFungal_overlap_dat$Current.raw > 0) # remove EM species with 0 km2 overlap
+
+TreeFungal_overlap_dat.no0$var = with(TreeFungal_overlap_dat.no0, reorder(Tree_spp, Diff.raw)) # reorder tree species axis
+TreeFungal_overlap_dat.no0 = TreeFungal_overlap_dat.no0[order(TreeFungal_overlap_dat.no0$var), ]
+
+TreeFungal.overlap.plot <-
+  ggplot(TreeFungal_overlap_dat.no0, aes(x=reorder(Tree_spp, Diff.raw), y = Diff.raw)) +
+  geom_hline(yintercept = 0, color="black") +
+  ggdist::stat_halfeye(
+    aes(colour=var, fill=var),
+    adjust = .75,
+    width = .75,
+    # set slab interval to show IQR and 95% data range
+    .width = c(.5, .95),
+    show.legend = F) + 
+  ggdist::stat_dots(
+    aes(color=var),
+    side = "left", 
+    justification = 1.2,
+    dotsize = .1,
+    binwidth = .01,
+    show.legend = F) +
+  coord_cartesian(xlim = c(1.2, NA)) +
+  scale_color_viridis(option = "plasma", discrete=T, direction = -1) +
+  scale_fill_viridis(option = "plasma", discrete = T, direction = -1) +
+  labs(x = "Tree species", y = "Tree-EM overlap difference\n(future - current, m2)") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        axis.text.x = element_text(angle=60, hjust = 1))
+
+ggarrange(ggarrange(PMEZ.linegraph.plot, PMEZ.overlap.plot, ncol = 2),
+          TreeFungal.overlap.plot, nrow=2)
+```
+ 
+ 
+The color figure with all tree species above shows how climate change could drastically reduce the overall extent of range overlap between certain tree hosts and fungal symbionts (more yellow colors), while other such partnerships may see a net increase in their geographic coverage (more purple colors).
+ 
+
+### 3. Mapping fungal diversity "left behind"
+These data and modeling approaches could be useful for identifying critical areas for fungal conservation. One way to show this is to characterize climate-driven changes in tree host habitat suitability, and then identify the total number of EM fungi that are predicted to be found in areas that are no longer climatically suitable for tree hosts. In essence, this shows areas where EM fungi may be "left behind" if they fail to track tree species range shifts at similar velocities.
+```{r warning=FALSE, message=FALSE}
+# Create a raster layer for Pseudotsuga menziesii range shifts
+PMEZ.RangeShift <- Tree_spp_Current_thresholdMap.ls[[PMEZ]] - Tree_spp_Future_thresholdMap.ls[[PMEZ]] # values = 1 are areas where habitat suitability has changed from presence to absence
+
+# Run for loop to quantify future range overlap of EM fungi with PMEZ range shift layer
+PMEZ.EM.rangeshift.joined.Map.ls <- list()
+PMEZ.EM.leftbehind.overlap.Map.ls <- list()
+
+for (i in PMEZ.EM.filts){
+  PMEZ.EM.rangeshift.joined.Map.ls[[i]] <- PMEZ.RangeShift + EM.sp_Future_thresholdMap.ls[[i]]
+  PMEZ.EM.leftbehind.overlap.Map.ls[[i]] <- PMEZ.EM.rangeshift.joined.Map.ls[[i]] >= 2
+}
+
+# Summarize EM diversity overlaping with PMEZ habitat shift
+PMEZ.EM.diversity.leftbehind <-  Reduce(`+`, PMEZ.EM.leftbehind.overlap.Map.ls)
+
+# Visualize EM diversity 'left behind'
+PMEZ.future.range <- reclassify(Tree_spp_Future_thresholdMap.ls[[PMEZ]], cbind(0, NA))
+PMEZ.future.range_pts <- rasterToPoints(PMEZ.future.range, spatial = TRUE) 
+PMEZ.future.range_df  <- data.frame(PMEZ.future.range_pts)
+
+PMEZ.EM.diversity.leftbehind.NA <- reclassify(PMEZ.EM.diversity.leftbehind, cbind(0, NA))
+PMEZ_EM.diversity.leftbehind_pts <- rasterToPoints(PMEZ.EM.diversity.leftbehind.NA, spatial = TRUE)
+PMEZ_EM.diversity.leftbehind_df  <- data.frame(PMEZ_EM.diversity.leftbehind_pts)
+
+ggplot() +
+  geom_sf(data = North.America, fill="grey95", lwd=0.1) +
+  geom_tile(data = PMEZ.future.range_df, aes(x = x, y = y, fill = layer), fill="grey65") +
+  geom_tile(data = PMEZ_EM.diversity.leftbehind_df, aes(x = x, y = y, fill = layer)) +
+  scale_fill_viridis(option = "plasma", direction = -1) +
+  labs(x="Longitude", y="Latitude", fill="EM diversity\n'left behind'") +
+  xlim(-130, -100) +
+  ylim(33, 55) +
+  annotate("text", label = "Pseudotsuga menziesii\nfuture range", x = -123, y = 53.25) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+<br>
+I have also created this map as an interactive html widget with <a href="https://r-tmap.github.io/tmap/">thematic maps.</a>
+<br>
+<a href="https://mvannuland.github.io/PMEZ.EMleftbehind_page/">View the interactive map here</a> 
+<br>
+(Tip - zoom in on the Pacific Northwest for the layers to appear)
+<br>
+
+
+### 4.1 Summarizing EM fungal species range shift extent and direction
+Finally, I have been adapting a unique spatial analysis to predict the extent and direction (northward/southward, expansion/contraction) of possible EM fungal range shifts due to climate change. This approach comes from longitudinal band analysis in <a href="https://onlinelibrary.wiley.com/doi/full/10.1111/j.1365-2486.2011.02571.x">Zhu et al. 2012</a> which slices geographic data into longitudinal bands, measures the upper, median, and lower spatial data quantiles of each slice, and then summarizes patterns across slices for a general picture of the predicted geographic changes. Here I show an example of longitudinal band analysis to measure latitudinal range shifts of EM fungi across North America.
+```{r warning=FALSE}
+###   Longitudinal Band Analysis    ###
+
+dir.create("longitudinal_band_plots/")
+
+north_america <- ne_countries(continent="North America")
+b <- as(extent(-167.5833, -55.66667, 20.33333, 70.45833), "SpatialPolygons") # specific to the spatial extent of this study
+crs(b) <- crs(north_america)
+north_america_cropped <- raster::crop(north_america, b)
+
+# Set quantile limits and longitudinal bands
+LOWER_BOUND_QUANTILE <- .025
+UPPER_BOUND_QUANTILE <- .975
+LON_BREAKS <- seq(-170, -55, by=3)
+
+# Example longitudinal band analysis using parallel processing
+N_CORES <- 12
+registerDoParallel(N_CORES)
+
+EM_range_shift_lba_list <- foreach(i = seq_along(names(EM.sp_Current_thresholdMap.ls))) %dopar% {
+  sp <- names(EM.sp_Current_thresholdMap.ls)[i]
+  
+  range_present_mask <- EM.sp_Current_thresholdMap.ls[[sp]]
+  range_present_mask[range_present_mask==0] <- NA
+  
+  range_future_mask <- EM.sp_Future_thresholdMap.ls[[sp]]
+  range_future_mask[range_future_mask==0] <- NA
+  
+  range_present_df <- cbind(
+    as(range_present_mask, "SpatialPolygonsDataFrame"),
+    coordinates(as(range_present_mask, "SpatialPolygonsDataFrame"))
+  ) %>% as.data.frame()
+  names(range_present_df) <- c("present", "lon", "lat")
+  
+  range_future_df <- cbind(
+    as(range_future_mask, "SpatialPolygonsDataFrame"),
+    coordinates(as(range_future_mask, "SpatialPolygonsDataFrame"))
+  ) %>% as.data.frame()
+  names(range_future_df) <- c("future", "lon", "lat")
+  
+  range_shift_df <- full_join(range_present_df, range_future_df, by=c("lon", "lat")) %>%
+    mutate(present = if_else(is.na(present), 0, present),
+           future = if_else(is.na(future), 0, future),
+           overlap = if_else(present==1 & future==1, "overlap",
+                             if_else(present==1 & future==0, "present only", "future only"))) %>%
+    dplyr::select(lon, lat, present, future, overlap)
+  
+  # split-apply-combine: cut long bands, calculate lat ranges, summarize
+  LON_BREAKS
+  
+  EM_range_shift_lba <- range_shift_df %>%
+    mutate(
+      lon_band = cut(lon, LON_BREAKS) # cut into long bands
+    ) %>%
+    group_by(lon_band) %>%
+    summarize( # calculate in each long band, upper and lower lat ranges
+      lat_lwr0 = quantile(lat[which(present==1)], LOWER_BOUND_QUANTILE),
+      lat_upr0 = quantile(lat[which(present==1)], UPPER_BOUND_QUANTILE),
+      lat_lwr1 = quantile(lat[which(future==1)], LOWER_BOUND_QUANTILE),
+      lat_upr1 = quantile(lat[which(future==1)], UPPER_BOUND_QUANTILE)
+    ) %>%
+    # string operations to get long band mid points
+    mutate(
+      lon_band_chr = lon_band %>%
+        as.character() %>%
+        str_sub(2, -2)
+    ) %>%
+    separate(lon_band_chr, c("lon_lwr", "lon_upr"), ",") %>%
+    mutate(
+      lon_lwr = as.numeric(lon_lwr),
+      lon_upr = as.numeric(lon_upr),
+      lon_mid = (lon_lwr + lon_upr) / 2
+    ) %>%
+    pivot_longer(cols = lat_lwr0:lat_upr1) %>%
+    mutate(scenario = sub("[A-Za-z_]+", "", name),
+           scenario = if_else(scenario == "0", "present", "future"),
+           bound = if_else(grepl("lwr", name), "lat_lwr", "lat_upr")) %>%
+    dplyr::select(-name) %>%
+    pivot_wider(names_from = bound)
+  
+  theme_set(theme_bw())
+  p <- ggplot() +
+    # plot North America
+    geom_sf(data = st_as_sf(north_america_cropped), fill = NA, col = "gray") +
+    # plot potential ranges, using a different color for each scenario
+    geom_point(data = range_shift_df[which(range_shift_df$overlap=="present only"),],
+               aes(lon, lat), col = "#B2b5ec") +
+    geom_point(data = range_shift_df[which(range_shift_df$overlap=="future only"),],
+               aes(lon, lat), col = "#Ecb2b2") +
+    geom_point(data = range_shift_df[which(range_shift_df$overlap=="overlap"),],
+               aes(lon, lat), col = "#D886f7") +
+    # plot latitudinal ranges, using a different color for each scenario
+    geom_point(data = EM_range_shift_lba, aes(lon_mid, lat_lwr, col=scenario),
+               position = position_dodge(width=1), shape=24) +
+    geom_point(data = EM_range_shift_lba, aes(lon_mid, lat_upr, col=scenario),
+               position = position_dodge(width=1), shape=25) +
+    geom_linerange(data = EM_range_shift_lba,
+                   aes(x=lon_mid, ymin=lat_lwr, ymax=lat_upr, col=scenario),
+                   position = position_dodge(width=1)) +
+    scale_color_manual(values=c("blue", "red")) +
+    geom_vline(xintercept = LON_BREAKS, linetype = "dashed", lwd=0.1) + # plot longitudinal bands as guides
+    # add title
+    ggtitle(paste0("Latitudinal range shifts for", ":\n", sp)) +
+    theme(plot.title = element_text(hjust=0.5))
+  
+  # save plot
+  ggsave(filename=paste0("longitudinal_band_plots/", sp, ".png"),
+         plot=p, device="png", height=5, width=7, units="in")
+  
+  EM_range_shift_lba
+}
+stopImplicitCluster()
+names(EM_range_shift_lba_list) <- names(EM.sp_Current_thresholdMap.ls)
+
+
+
+# Here is an example showing what these types of longitude band maps look like:
+
+sp <- names(EM.sp_Current_thresholdMap.ls[1])
+  
+  range_present_mask <- EM.sp_Current_thresholdMap.ls[[sp]]
+  range_present_mask[range_present_mask==0] <- NA
+  
+  range_future_mask <- EM.sp_Future_thresholdMap.ls[[sp]]
+  range_future_mask[range_future_mask==0] <- NA
+  
+  range_present_df <- cbind(
+    as(range_present_mask, "SpatialPolygonsDataFrame"),
+    coordinates(as(range_present_mask, "SpatialPolygonsDataFrame"))
+  ) %>% as.data.frame()
+  names(range_present_df) <- c("present", "lon", "lat")
+  
+  range_future_df <- cbind(
+    as(range_future_mask, "SpatialPolygonsDataFrame"),
+    coordinates(as(range_future_mask, "SpatialPolygonsDataFrame"))
+  ) %>% as.data.frame()
+  names(range_future_df) <- c("future", "lon", "lat")
+  
+  range_shift_df <- full_join(range_present_df, range_future_df, by=c("lon", "lat")) %>%
+    mutate(present = if_else(is.na(present), 0, present),
+           future = if_else(is.na(future), 0, future),
+           overlap = if_else(present==1 & future==1, "overlap",
+                             if_else(present==1 & future==0, "present only", "future only"))) %>%
+    dplyr::select(lon, lat, present, future, overlap)
+  
+  # split-apply-combine: cut long bands, calculate lat ranges, summarize
+  EM_range_shift_lba <- range_shift_df %>%
+    mutate(
+      lon_band = cut(lon, LON_BREAKS) # cut into long bands
+    ) %>%
+    group_by(lon_band) %>%
+    summarize( # calculate in each long band, upper and lower lat ranges
+      lat_lwr0 = quantile(lat[which(present==1)], LOWER_BOUND_QUANTILE),
+      lat_upr0 = quantile(lat[which(present==1)], UPPER_BOUND_QUANTILE),
+      lat_lwr1 = quantile(lat[which(future==1)], LOWER_BOUND_QUANTILE),
+      lat_upr1 = quantile(lat[which(future==1)], UPPER_BOUND_QUANTILE)
+    ) %>%
+    # string operations to get long band mid points
+    mutate(
+      lon_band_chr = lon_band %>%
+        as.character() %>%
+        str_sub(2, -2)
+    ) %>%
+    separate(lon_band_chr, c("lon_lwr", "lon_upr"), ",") %>%
+    mutate(
+      lon_lwr = as.numeric(lon_lwr),
+      lon_upr = as.numeric(lon_upr),
+      lon_mid = (lon_lwr + lon_upr) / 2
+    ) %>%
+    pivot_longer(cols = lat_lwr0:lat_upr1) %>%
+    mutate(scenario = sub("[A-Za-z_]+", "", name),
+           scenario = if_else(scenario == "0", "present", "future"),
+           bound = if_else(grepl("lwr", name), "lat_lwr", "lat_upr")) %>%
+    dplyr::select(-name) %>%
+    pivot_wider(names_from = bound)
+  
+  theme_set(theme_bw())
+  p <- ggplot() +
+    # plot North America
+    geom_sf(data = st_as_sf(north_america_cropped), fill = NA, col = "gray") +
+    # plot potential ranges, using a different color for each scenario
+    geom_point(data = range_shift_df[which(range_shift_df$overlap=="present only"),],
+               aes(lon, lat), col = "#B2b5ec") +
+    geom_point(data = range_shift_df[which(range_shift_df$overlap=="future only"),],
+               aes(lon, lat), col = "#Ecb2b2") +
+    geom_point(data = range_shift_df[which(range_shift_df$overlap=="overlap"),],
+               aes(lon, lat), col = "#D886f7") +
+    # plot latitudinal ranges, using a different color for each scenario
+    geom_point(data = EM_range_shift_lba, aes(lon_mid, lat_lwr, col=scenario),
+               position = position_dodge(width=1), shape=24) +
+    geom_point(data = EM_range_shift_lba, aes(lon_mid, lat_upr, col=scenario),
+               position = position_dodge(width=1), shape=25) +
+    geom_linerange(data = EM_range_shift_lba,
+                   aes(x=lon_mid, ymin=lat_lwr, ymax=lat_upr, col=scenario),
+                   position = position_dodge(width=1)) +
+    scale_color_manual(values=c("blue", "red")) +
+    geom_vline(xintercept = LON_BREAKS, linetype = "dashed", lwd=0.1) + # plot longitudinal bands as guides
+    # add title
+    ggtitle(paste0("Latitudinal range shifts for", ":\n", sp)) +
+    theme(plot.title = element_text(hjust=0.5))
+  
+print(p)
+```
+<br>
+
+
+### 4.2
+And here is one way to summarize the results of the longitudinal band analysis across the >300 EM species list by examining their latitudinal range shifts. Specifically, there are four quadrants that differentiate the possible climate-driven range responses: 
+<br>
+<br>
+**- Latitudinal expansion** (Northern shift with Southern contraction)
+<br>
+**- Northward shift** (combined Northern and Southern shift)
+<br>
+**- Latitudinal contraction** (Northern contraction with Southern shift)
+<br>
+**- Southern shift** (combined Northern and Southern contraction)
+<br>
+<br>
+From this, you can use contingency analysis to test whether the collective distribution of EM range responses differs from the null expectation (e.g., ~25% of cases in each of the 4 quadrants).
+```{r message=FALSE}
+###   Latitudinal Range Shift Analysis    ###
+EM_range_shift_lba_combined <- do.call(
+  rbind,
+  lapply(
+    seq_along(EM_range_shift_lba_list),
+    function(i) cbind(names(EM.sp_Current_thresholdMap.ls)[i], EM_range_shift_lba_list[[i]])
+  )
+)
+names(EM_range_shift_lba_combined)[1] <- "sp"
+#head(EM_range_shift_lba_combined)
+
+# Get mean and SE of latitudinal shift
+EM_range_shift_mean_se <- EM_range_shift_lba_combined %>%
+  group_by(sp, lon_band) %>%
+  summarise(shift_lwr = lat_lwr[scenario=="future"] - lat_lwr[scenario=="present"],
+            shift_upr = lat_upr[scenario=="future"] - lat_upr[scenario=="present"]) %>%
+  summarise(shift_lwr_mean = mean(shift_lwr, na.rm=TRUE),
+            shift_upr_mean = mean(shift_upr, na.rm=TRUE),
+            shift_lwr_se = sd(shift_lwr, na.rm=TRUE),
+            shift_upr_se = sd(shift_upr, na.rm=TRUE))
+
+quadrant_annot <- data.frame(
+  xpos = c(-Inf,-Inf,Inf,Inf),
+  ypos =  c(-Inf, Inf,-Inf,Inf),
+  text = c("Southward\nrange shift", "Latitudinal\nexpansion",
+           "Latitudinal\ncontraction", "Northward\nrange shift"),
+  hjustvar = c(-0.1, -0.1, 1.1, 1.1),
+  vjustvar = c(-0.5, 1.5, -0.5, 1.5))
+
+EM.shift.means.plot <-
+  ggplot(EM_range_shift_mean_se, aes(shift_lwr_mean, shift_upr_mean)) +
+  geom_vline(xintercept = 0, linetype = "dashed", col="grey") +
+  geom_hline(yintercept = 0, linetype = "dashed", col="grey") +
+  geom_linerange(aes(ymin = shift_upr_mean - shift_upr_se,
+                     ymax = shift_upr_mean + shift_upr_se), alpha=0.1) +
+  geom_linerange(aes(xmin = shift_lwr_mean - shift_lwr_se,
+                     xmax = shift_lwr_mean + shift_lwr_se), alpha=0.1) +
+  geom_point(shape=3.5, alpha=0.5, col="red") +
+  xlab("Southern boundary change (degrees latitude)") +
+  ylab("Northern boundary change (degrees latitude)") +
+  geom_text(data = quadrant_annot, aes(x=xpos,y=ypos,hjust=hjustvar,
+                                       vjust=vjustvar,label=text)) +
+  ggtitle("Mean latitudinal shifts in the potential ranges of North American EM fungi") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust=0.5), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) 
+
+ggsave(plot=EM.shift.means.plot, "longitudinal_band_plots/EM_latitudinal_shift_mean_se.png", 
+       device="png", width=4, height=4, units="in")
+
+plot(EM.shift.means.plot)
+```
+ 
+ 
+With this analysis, most EM species ranges are predicted to shift northward with climate change.
