@@ -1,5 +1,7 @@
 # DS_Project_1
 
+## Geographic changes in tree-fungal partnerships
+
 **Description:** This code comes from an ongoing project where I am testing how climate change may cause geographic shifts in North American ectomycorrhizal symbioses. Because this work is unpublished and in collaboration with researchers at Stanford University and UC Santa Cruz, I am unable to share the full datasets and methods right now. However, I can describe the general approach and provide a few data objects to recreate some recent analyses and figures below.
 
 Climate disruptions may result in spatial mismatches between plant and microbial distributions, and the loss of historical interactions or gain of novel associations can have important consequences for biodiversity and ecosystem functioning. Biogeographic mismatches caused by climate change might arise if plants and microbes respond to different climate variables or if they differ in their sensitivity to the same variable. Previous work has shown how climate warming is predicted to reduce ectomycorrhizal fungal diversity in pine-dominated forest systems <a href="https://doi.org/10.1111/jbi.13802">(Steidinger et al. 2020)</a>, but this assumes that tree and fungal species ranges are static. Realistically, both plant and fungal distributions are likely to be reshuffled (to various extents) as their environments change. Forecasting where species interactions may be gained/lost on the landscape is an important step towards linking changes in plant-mycorrhizal symbioses to ecosystem processes and forest resiliency.
