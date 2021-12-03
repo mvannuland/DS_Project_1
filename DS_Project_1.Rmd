@@ -500,7 +500,7 @@ print(p)
 <br>
 
 
-### 4.1
+### 4.2
 And here is one way to summarize the results of the longitudinal band analysis across the >300 EM species list by examining their latitudinal range shifts. Specifically, there are four quadrants that differentiate the possible climate-driven range responses: 
 <br>
 <br>
