@@ -64,7 +64,7 @@ Tree_spp_Future_thresholdMap.ls <- readRDS(file="Tree_spp_Future_thresholdMap.ls
 EM.sp_Current_thresholdMap.ls <- readRDS(file="EM.sp_Current_thresholdMap.ls.rds")
 EM.sp_Future_thresholdMap.ls <- readRDS(file="EM.sp_Future_thresholdMap.ls.rds") 
 
-# Co-occurrence data to filter the spatial comparisons (list of fungi that co-occur at sites with the different tree species)
+# Co-occurrence data to filter spatial comparisons (list of fungi that co-occur at sites with tree species)
 CoOccur_filter.ls <- readRDS(file="CoOccur_filter.ls.rds")
 ```
 <br>
