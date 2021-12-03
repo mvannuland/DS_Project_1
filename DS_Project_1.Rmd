@@ -71,9 +71,10 @@ CoOccur_filter.ls <- readRDS(file="CoOccur_filter.ls.rds")
 
 
 ### 2.1 Estimating overlap between tree species and fungal species ranges
-The SDM output includes spatial projections of habitat suitability: areas where the plant and fungal species in this study are likely to be found based on relationships between their occurrence records and a number of environmental variables. As part of the modeling approach (that, unfortunately, I can't quite share yet), I used k-fold cross validation to evaluate the accuracy and sensitivity of each species model in order to set a binary presence/absence threshold. Masking  habitat suitability to only include areas above the defined thresholds creates maps that can be considered an approximation or <em>idealized version</em> of a given species' geographic range. 
+The SDM output includes spatial projections of habitat suitability: areas where the plant and fungal species in this study are likely to be found based on relationships between their occurrence records and a number of environmental variables. As part of the modeling approach (that, unfortunately, I can't quite share yet), I used k-fold cross validation to evaluate the accuracy and sensitivity of each species model in order to set a binary presence/absence threshold. Masking  habitat suitability to only include areas above the defined thresholds creates maps that can be considered an approximation or <em>idealized version</em> of a given species' geographic range.
+ 
+For example, here's what SDM projections look like after setting threshold cutoffs to create presence/absence maps for Douglas fir trees and a specific Russula fungal species.
 ```{r}
-# For example, here's what SDM projections look like after setting threshold cutoffs to create presence/absence maps for Douglas fir trees and a Russula fungal species.
 par(mfrow = c(1, 2))
 plot(Tree_spp_Current_thresholdMap.ls$`Pseudotsuga menziesii`, main="Pseudotsuga menziesii", legend=FALSE)
 plot(EM.sp_Current_thresholdMap.ls$Russula_heterophylla, main="Russula heterophylla", legend=FALSE)
